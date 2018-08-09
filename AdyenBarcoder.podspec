@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'AdyenBarcoder'
-  s.version          = '1.2.3'
+  s.version          = '1.3.5'
   s.summary          = 'Use Verifone Barcode reader over MFi'
 
   s.description      = <<-DESC
@@ -14,5 +14,5 @@ Library to connect and use Verifone Barcode reader over MFi connection
 
   s.ios.deployment_target = '8.0'
 
-  s.source_files = 'AdyenBarcoder/*'
+  s.source_files = 'AdyenBarcoder/*.swift'
 end

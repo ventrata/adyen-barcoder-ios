@@ -9,9 +9,11 @@
 import Foundation
 import ExternalAccessory
 
-private enum ScanMode: Int {
-    case hard = 1
-    case soft = 2
+@objc public enum BarcoderMode: Int {
+    case hardwareAndSofwareButton // default
+    case hardwareButton
+    case softwareButton
+    case disabled
 }
 
 @objc public enum BarcoderStatus: Int {
@@ -29,13 +31,19 @@ private enum ScanMode: Int {
 }
 
 @objc public protocol BarcoderDelegate {
-    func didScan(barcode: Barcode)
+    @objc func didScan(barcode: Barcode)
     @objc optional func didChange(status: BarcoderStatus)
     @objc optional func didReceiveLog(message: String)
 }
 
+private enum ScanMode: Int {
+    case hard = 1
+    case soft = 2
+}
+
 typealias CommandCompletion = (ParserResponse?, Error?) -> Void
 
+@objcMembers
 public class Barcoder: NSObject {
     private let accessoryProtocol = "com.verifone.pmr.barcode"
     private var accessoryStreamer: AccessoryStreamer?
@@ -43,17 +51,13 @@ public class Barcoder: NSObject {
     private var accessoryConnectionId = -1
     private var isInitialized = false
     private var isDeviceOpen = false
+    private var observers: [NSObjectProtocol] = []
     
     //  Command completion
     private var currentCommandCompletion: CommandCompletion?
     private var waitingForDeviceOpenResponse = false
     private var commandResponseTimer: Timer?
-    
-    //  Re-open device workaround
-    private let reopenDeviceMaxCount = 0
-    private let reopenDeviceTimeInterval: TimeInterval = 5
-    private var reopenDeviceCurrentCount = 0
-    
+
     public static let sharedInstance = Barcoder()
     
     public var delegate: BarcoderDelegate? {
@@ -83,8 +87,14 @@ public class Barcoder: NSObject {
     public var interleaved2Of5 = false {
         didSet {
             if status == .ready {
-                configureSimbology()
+                configureSymbology()
             }
+        }
+    }
+    
+    public var mode: BarcoderMode = .hardwareAndSofwareButton {
+        didSet {
+            configureBarcoderMode()
         }
     }
     
@@ -102,13 +112,23 @@ public class Barcoder: NSObject {
     }
     
     private func registerForNotifications() {
-        NotificationCenter.default.addObserver(forName: .UIApplicationDidEnterBackground, object: nil, queue: .main) { [weak self] (notification) in
-            self?.disconnect()
+        let didEnterBackgroundObserver = NotificationCenter.default.addObserver(
+            forName: .UIApplicationDidEnterBackground,
+            object: nil,
+            queue: .main) { [weak self] (notification) in
+                guard let strongSelf = self else { return }
+                strongSelf.disconnect()
         }
 
-        NotificationCenter.default.addObserver(forName: .UIApplicationWillEnterForeground, object: nil, queue: .main) { [weak self] (notification) in
-            self?.reconnect()
+        let willEnterForegroundObserver = NotificationCenter.default.addObserver(
+            forName: .UIApplicationWillEnterForeground,
+            object: nil,
+            queue: .main) { [weak self] (notification) in
+                guard let strongSelf = self else { return }
+                strongSelf.reconnect()
         }
+
+        observers += [didEnterBackgroundObserver, willEnterForegroundObserver]
     }
     
     private func run() {
@@ -123,7 +143,6 @@ public class Barcoder: NSObject {
                 Logger.trace("Set isDeviceOpen to false.")
                 self?.isDeviceOpen = false
                 self?.accessoryConnectionId = accessory.connectionID
-                self?.reopenDeviceCurrentCount = 0
                 self?.openDevice()
             } else {
                 let isOpen = self?.isDeviceOpen ?? false
@@ -149,6 +168,7 @@ public class Barcoder: NSObject {
     }
     
     deinit {
+        observers.forEach(NotificationCenter.default.removeObserver(_:))
         accessoryStreamer?.disconnect()
     }
     
@@ -188,14 +208,6 @@ public class Barcoder: NSObject {
             Logger.debug("Open device command result: \(result)")
             if self.currentCommand == .BAR_DEV_OPEN && result == true {
                 self.didOpenDevice()
-                
-                //  Reconnect if neeeded
-                self.reopenDeviceCurrentCount += 1
-                if self.reopenDeviceCurrentCount < self.reopenDeviceMaxCount {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + self.reopenDeviceTimeInterval) {
-                        self.openDevice()
-                    }
-                }
             }
         }
     }
@@ -224,6 +236,16 @@ public class Barcoder: NSObject {
         sendCommand(.AUTO_BEEP_CONFIG, parameter: GenPid.AUTO_BEEP_MODE.rawValue, 1) //beep
     }
     
+    private func configureBarcoderMode() {
+        switch mode {
+        case .hardwareButton, .hardwareAndSofwareButton:
+            setScan(mode: .hard)
+        
+        case .softwareButton, .disabled:
+            setScan(mode: .soft)
+        }
+    }
+    
     public func setSymbology(_ parameter: Barcoder.SymPid, enabled: Bool) {
         setSymbology(parameter, value: enabled ? 1 : 0)
     }
@@ -233,21 +255,40 @@ public class Barcoder: NSObject {
     }
 
     public func startSoftScan() {
+        guard mode == .hardwareAndSofwareButton || mode == .softwareButton else {
+            Logger.debug("Soft can is disabled. Check `mode` variable.")
+            return
+        }
+        
         Logger.debug("Starting soft scan")
-        startScan(mode: .soft)
-    }
-    
-    public func stopSoftScan() {
-        startScan(mode: .hard)
-        Logger.debug("Stopped soft scan")
-    }
-    
-    private func startScan(mode: ScanMode) {
-        sendCommand(.STOP_SCAN)
-        sendCommand(.SET_TRIG_MODE, parameter: GenPid.SET_TRIG_MODE.rawValue, mode.rawValue)
+        setScan(mode: .soft)
         sendCommand(.START_SCAN)
     }
     
+    public func stopSoftScan() {
+        guard mode == .hardwareAndSofwareButton || mode == .softwareButton else {
+            Logger.debug("Soft can is disabled. Check `mode` variable.")
+            return
+        }
+        
+        Logger.debug("Stopping soft scan")
+        if (mode == .hardwareAndSofwareButton) {
+            setScan(mode: .hard)
+        } else {
+            sendCommand(.STOP_SCAN)
+        }
+        
+    }
+    
+    private func setScan(mode: ScanMode) {
+        sendCommand(.STOP_SCAN)
+        sendCommand(.SET_TRIG_MODE, parameter: GenPid.SET_TRIG_MODE.rawValue, mode.rawValue)
+        
+        if mode == .hard {
+            sendCommand(.START_SCAN)
+        }
+    }
+
     private func sendCommand(_ cmd: Barcoder.Cmd) {
         sendCommand(cmd) { response, error in
             let result = response?.result ?? false
@@ -287,12 +328,13 @@ public class Barcoder: NSObject {
         if let streamer = accessoryStreamer, !streamer.isOpened {
             streamer.openSession()
         }
-        configureSimbology()
+        sendCommand(.RESTORE_DEFAULTS) //Reset
+        configureSymbology()
         configureDefaults()
-        startScan(mode: .hard)
+        configureBarcoderMode()
     }
     
-    private func configureSimbology() {
+    private func configureSymbology() {
         if interleaved2Of5 {
             setSymbology(.EN_EAN13_JAN13, value: 0)
             setSymbology(.EN_INTER2OF5, value: 1)

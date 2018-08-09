@@ -13,7 +13,7 @@ enum DeviceStatus {
     case disconnected, closed, opening, open
 }
 
-class AccessoryStreamer : Streamer {
+class AccessoryStreamer: Streamer {
     private let maxRetries = 6
     private let delayBetweenRetriesInMillis = 500
     private var session: EASession?
@@ -42,6 +42,8 @@ class AccessoryStreamer : Streamer {
     }
     
     deinit {
+        EAAccessoryManager.shared().unregisterForLocalNotifications()
+        NotificationCenter.default.removeObserver(self)
         disconnect()
     }
     
@@ -71,7 +73,7 @@ class AccessoryStreamer : Streamer {
     }
     
     func openSession() {
-        guard isOpeningSession == false else { return }
+        guard isOpeningSession == false, deviceStatus != .open else { return }
         
         isOpeningSession = true
         
@@ -148,25 +150,26 @@ class AccessoryStreamer : Streamer {
         }
     }
     
-    func accessoryDidConnectNotification(_ notification: NSNotification) {
-        let accessory = notification.userInfo?[EAAccessoryKey] as! EAAccessory
-        
-        Logger.debug("Received accesoryDidConnectNotification with: \(accessory.description)")
-        
-        if !isAccessorySupported(accessory) {
-            Logger.debug("Accessory not supported")
-            return
-        }
-        
-        if accessory.isConnected {
-            connect(accessory)
+    @objc func accessoryDidConnectNotification(_ notification: NSNotification) {
+        if let accessory = notification.userInfo?[EAAccessoryKey] as? EAAccessory {
+            Logger.debug("Received accesoryDidConnectNotification with: \(accessory.description)")
+            
+            if !isAccessorySupported(accessory) {
+                Logger.debug("Accessory not supported")
+                return
+            }
+            
+            if accessory.isConnected {
+                connect(accessory)
+            }
         }
     }
     
-    func accessoryDidDisconnectNotification(_ notification: NSNotification) {
-        let accessory = notification.userInfo?[EAAccessoryKey] as! EAAccessory
-        Logger.debug("Received accessoryDidDisconnectNotification with: \(accessory.description)")
-        deviceStatus = .disconnected
-        closeSession()
+    @objc func accessoryDidDisconnectNotification(_ notification: NSNotification) {
+        if let accessory = notification.userInfo?[EAAccessoryKey] as? EAAccessory, isAccessorySupported(accessory) {
+            Logger.debug("Received accessoryDidDisconnectNotification with: \(accessory.description)")
+            deviceStatus = .disconnected
+            closeSession()
+        }
     }
 }
