@@ -130,7 +130,7 @@ class AccessoryStreamer: Streamer {
     }
 
     func isAccessorySupported(_ accessory: EAAccessory) -> Bool {
-        return accessory.protocolStrings.contains(accessoryProtocol)
+        return accessory.protocolStrings.contains(accessoryProtocol) && !accessory.modelNumber.contains("E355")
     }
     
     func initAutoconnect() {
